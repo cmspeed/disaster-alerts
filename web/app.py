@@ -126,8 +126,7 @@ def run_overpasses_only(run_id, params):
         if params.get("drcs") == "yes" and params.get("np_event_date"):
             cmd.extend(["-g", params["np_event_date"]])
 
-        # Take a snapshot of folders before running, execute,
-        # then find the newly created folder
+        # Take a snapshot of folders before running/execute, find new folder
         before_folders = set(
             glob.glob(os.path.join(BASE_OUTPUT_DIR, "nextpass_outputs_*"))
         )
@@ -351,28 +350,21 @@ def process_bbox():
     if isinstance(search_type, str):
         search_type = [search_type]
 
-    # Track targets dynamically to allow multi-select concurrency
-    targets = []
-
+    # Determine which processing function to run based on the search type
     if "disasters" in search_type or "all" in search_type:
-        targets.append(run_disasters)
+        target = run_disasters  # Fixed from run_disasters_workflow
+    elif "opera_search" in search_type and "overpasses" in search_type:
+        data["functionality"] = "both"
+        target = run_opera_search
+    elif "opera_search" in search_type:
+        data["functionality"] = "opera_search"
+        target = run_opera_search
     else:
-        # Check independent toggles when a full pipeline run isn't requested
-        if "opera_search" in search_type:
-            targets.append(run_opera_search)
-        if "overpasses" in search_type:
-            targets.append(run_overpasses_only)
+        target = run_overpasses_only
 
-    if not targets:
-        return jsonify({"error": "No valid workflows selected"}), 400
-
-    # Create a unified run ID for this combination request
+    # Create a new processing run and start it in a separate thread
     run_id = _create_run(search_type)
-
-    # Spawn a separate thread for every active target
-    for target in targets:
-        threading.Thread(target=target, args=(run_id, data), daemon=True).start()
-
+    threading.Thread(target=target, args=(run_id, data), daemon=True).start()
     return jsonify({"status": "processing started", "run_id": run_id})
 
 
@@ -393,15 +385,23 @@ def processing_status():
 
 
 # ---- Serve maps from latest next-pass folder ----
-@app.route("/maps/<run_id>/<filename>")
+@app.route("/maps/<run_id>/<path:filename>")
 def maps(run_id, filename):
     run_state = _get_run_state(run_id)
     if run_state is None:
         return f"Unknown run: {run_id}", 404
 
     folder = run_state.get("latest_folder")
-    if folder and os.path.exists(os.path.join(folder, filename)):
-        return send_from_directory(folder, filename)
+    if not folder:
+        return f"No folder matched for run: {run_id}", 404
+
+    file_path = os.path.join(folder, filename)
+
+    if os.path.exists(file_path):
+        directory = os.path.dirname(file_path)
+        name = os.path.basename(file_path)
+        return send_from_directory(directory, name)
+
     return f"File {filename} not found", 404
 
 

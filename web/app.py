@@ -30,21 +30,27 @@ processing_runs = {}
 processing_runs_lock = threading.Lock()
 
 
-LAST_SEARCH_CACHE = {
-    "signature": None,
-    "folder": None
-}
+LAST_SEARCH_CACHE = {"signature": None, "folder": None}
+
 
 def _get_search_signature(params):
-    return str({
-        "bbox": [params.get("lat_min"), params.get("lat_max"), params.get("lon_min"), params.get("lon_max")],
-        "products": params.get("products", []),
-        "date_strat": params.get("dis_date_strat"),
-        "recent_n": params.get("dis_recent_n"),
-        "single_date": params.get("dis_single_date"),
-        "start_date": params.get("dis_start_date"),
-        "end_date": params.get("dis_end_date")
-    })
+    return str(
+        {
+            "bbox": [
+                params.get("lat_min"),
+                params.get("lat_max"),
+                params.get("lon_min"),
+                params.get("lon_max"),
+            ],
+            "products": params.get("products", []),
+            "date_strat": params.get("dis_date_strat"),
+            "recent_n": params.get("dis_recent_n"),
+            "single_date": params.get("dis_single_date"),
+            "start_date": params.get("dis_start_date"),
+            "end_date": params.get("dis_end_date"),
+        }
+    )
+
 
 def _list_output_folders():
     return sorted(
@@ -107,27 +113,34 @@ def run_overpasses_only(run_id, params):
             str(params["lon_min"]),
             str(params["lon_max"]),
             "-f",
-            "overpasses"
+            "overpasses",
         ]
-        
+
         # Append UI parameters specific to the "Next Pass" panel
         if params.get("satellites") and "all" not in params["satellites"]:
             cmd.extend(["-s"] + params["satellites"])
-            
+
         if params.get("np_lookback") and str(params["np_lookback"]).isdigit():
             cmd.extend(["-k", str(params["np_lookback"])])
 
         if params.get("drcs") == "yes" and params.get("np_event_date"):
             cmd.extend(["-g", params["np_event_date"]])
 
-        # Take a snapshot of folders before running, execute, then find the newly created folder
-        before_folders = set(glob.glob(os.path.join(BASE_OUTPUT_DIR, "nextpass_outputs_*")))
+        # Take a snapshot of folders before running, execute,
+        # then find the newly created folder
+        before_folders = set(
+            glob.glob(os.path.join(BASE_OUTPUT_DIR, "nextpass_outputs_*"))
+        )
         subprocess.run(cmd, check=True, cwd=BASE_OUTPUT_DIR)
-        after_folders = set(glob.glob(os.path.join(BASE_OUTPUT_DIR, "nextpass_outputs_*")))
-        
+        after_folders = set(
+            glob.glob(os.path.join(BASE_OUTPUT_DIR, "nextpass_outputs_*"))
+        )
+
         new_folders = list(after_folders - before_folders)
         if new_folders:
-            _update_run_state(run_id, latest_folder=max(new_folders, key=os.path.getmtime))
+            _update_run_state(
+                run_id, latest_folder=max(new_folders, key=os.path.getmtime)
+            )
         else:
             _update_run_state(run_id, error="No output folder could be matched.")
     except Exception as e:
@@ -142,58 +155,64 @@ def run_opera_search(run_id, params):
     Caches the resulting output directory for faster downstream mosaicking.
     """
     run_state = _get_run_state(run_id)
-    if run_state is None: return
+    if run_state is None:
+        return
 
     try:
         bbox = [
             float(params["lat_min"]),
             float(params["lat_max"]),
             float(params["lon_min"]),
-            float(params["lon_max"])]
-        
-        # Parse product selections (Preserving the multi-product target fixed list format from PR1)
+            float(params["lon_max"]),
+        ]
+
+        # Parse product selections
         products = params.get("products", [])
         target_products = products if products and "all" not in products else None
 
-        # Even though this is purely a search, map the advanced Disasters date panel logic
+        # While this is search, map the advanced Disasters date panel logic
         date_strat = params.get("dis_date_strat", "range")
         pipeline_date = None
         number_of_dates = 5
-        if date_strat == "single": pipeline_date = params.get("dis_single_date")
+        if date_strat == "single":
+            pipeline_date = params.get("dis_single_date")
         elif date_strat == "range":
             if params.get("dis_start_date") and params.get("dis_end_date"):
                 pipeline_date = f"{params['dis_start_date']}/{params['dis_end_date']}"
         elif params.get("dis_recent_n"):
             number_of_dates = int(params["dis_recent_n"])
-            
+
         # Isolate the search output
         output_dir = Path(BASE_OUTPUT_DIR) / f"search_outputs_{run_id}"
-        
-        # Strip prefixes for standard search engine compatibility if explicit targets are used
+
+        # Strip prefixes for standard search engine compatibility
         np_prod = None
         if target_products:
-            np_prod = [p.replace("OPERA_L3_", "").replace("OPERA_L2_", "") for p in target_products]
+            np_prod = [
+                p.replace("OPERA_L3_", "").replace("OPERA_L2_", "")
+                for p in target_products
+            ]
 
         # Execute the search natively in Python (instead of via subprocess)
         result_dir = run_search_only(
-            bbox=bbox, 
+            bbox=bbox,
             output_dir=output_dir,
             product=np_prod,
             date=pipeline_date,
             number_of_dates=number_of_dates,
-            compute_cloudiness=bool(params.get("opt_cloud", False))
+            compute_cloudiness=bool(params.get("opt_cloud", False)),
         )
-        
-        # Cache the search signature and folder path for potential reuse in the disasters workflow
+
+        # Cache search signature and folder path for reuse in the disasters workflow
         if result_dir:
-            # Record a "signature" of the exact UI inputs used to generate this search and resulting folder path
+            # Record a "signature" of the exact UI inputs used
             LAST_SEARCH_CACHE["signature"] = _get_search_signature(params)
             LAST_SEARCH_CACHE["folder"] = result_dir
 
             _update_run_state(run_id, latest_folder=str(result_dir))
         else:
             _update_run_state(run_id, error="Search exited gracefully without outputs.")
-            
+
     except Exception as e:
         _update_run_state(run_id, error=str(e))
     finally:
@@ -206,15 +225,17 @@ def run_disasters(run_id, params):
     Checks the cache first to see if it can skip the cloud search phase.
     """
     run_state = _get_run_state(run_id)
-    if run_state is None: return
+    if run_state is None:
+        return
 
     try:
         bbox = [
             float(params["lat_min"]),
             float(params["lat_max"]),
             float(params["lon_min"]),
-            float(params["lon_max"])]
-            
+            float(params["lon_max"]),
+        ]
+
         products = params.get("products", [])
         target_products = products if products and "all" not in products else None
 
@@ -222,7 +243,8 @@ def run_disasters(run_id, params):
         date_strat = params.get("dis_date_strat", "range")
         pipeline_date = None
         number_of_dates = 5
-        if date_strat == "single": pipeline_date = params.get("dis_single_date")
+        if date_strat == "single":
+            pipeline_date = params.get("dis_single_date")
         elif date_strat == "range":
             if params.get("dis_start_date") and params.get("dis_end_date"):
                 pipeline_date = f"{params['dis_start_date']}/{params['dis_end_date']}"
@@ -232,9 +254,12 @@ def run_disasters(run_id, params):
         # Calculate the signature of the current UI inputs (check cache)
         current_sig = _get_search_signature(params)
         local_dir = None
-        
+
         # If current UI inputs match UI inputs of the last search, grab folder from cache
-        if LAST_SEARCH_CACHE["signature"] == current_sig and LAST_SEARCH_CACHE["folder"]:
+        if (
+            LAST_SEARCH_CACHE["signature"] == current_sig
+            and LAST_SEARCH_CACHE["folder"]
+        ):
             local_dir = Path(LAST_SEARCH_CACHE["folder"])
 
         output_dir = Path(BASE_OUTPUT_DIR) / f"disasters_outputs_{run_id}"
@@ -248,38 +273,47 @@ def run_disasters(run_id, params):
             date=pipeline_date,
             number_of_dates=number_of_dates,
             layout_title=(
-                 f"Disaster Analysis ({bbox[0]:.2f},{bbox[2]:.2f} – "
-                 f"{bbox[1]:.2f},{bbox[3]:.2f})"
-             ),
+                f"Disaster Analysis ({bbox[0]:.2f},{bbox[2]:.2f} – "
+                f"{bbox[1]:.2f},{bbox[3]:.2f})"
+            ),
             reclassify_snow_ice=bool(params.get("opt_rc", False)),
             compute_cloudiness=bool(params.get("opt_cloud", False)),
             no_mask=bool(params.get("opt_nomask", False)),
             filter_date=params.get("opt_fd") or None,
-            slope_threshold=int(params["opt_st"]) if str(params.get("opt_st")).isdigit() else None
+            slope_threshold=(
+                int(params["opt_st"]) if str(params.get("opt_st")).isdigit() else None
+            ),
         )
-    
-        print(f"Running disasters pipeline: product={config.product}, bbox={config.bbox}")
-        
+
+        print(
+            f"Running disasters pipeline: product={config.product}, bbox={config.bbox}"
+        )
+
         # Route execution based on UI dropdown
         dis_action = params.get("dis_action", "run")
         returned_dir = None
 
         if dis_action == "download":
             from disasters.pipeline import run_download_only
-            returned_dir = run_download_only(bbox=config.bbox, output_dir=config.output_dir, product=config.product)
+
+            returned_dir = run_download_only(
+                bbox=config.bbox, output_dir=config.output_dir, product=config.product
+            )
         else:
             returned_dir = run_pipeline(config)
 
-        # Register Success/Failure using the returned artifacts path safely (fixes false positive folder flag)
+        # Register Success/Failure using the returned artifacts path
         if returned_dir and Path(returned_dir).exists():
             _update_run_state(run_id, latest_folder=str(returned_dir))
             print(f"Success! Output folder: {returned_dir}")
         else:
             _update_run_state(
                 run_id,
-                error="Processing finished, but no valid output artifacts were produced."
+                error=(
+                    "Processing finished, but no valid output artifacts were produced."
+                ),
             )
-            
+
     except Exception as e:
         _update_run_state(run_id, error=str(e))
     finally:
@@ -316,10 +350,10 @@ def process_bbox():
     search_type = data.get("search_type", ["opera_search"])
     if isinstance(search_type, str):
         search_type = [search_type]
-    
+
     # Track targets dynamically to allow multi-select concurrency
     targets = []
-    
+
     if "disasters" in search_type or "all" in search_type:
         targets.append(run_disasters)
     else:
@@ -334,11 +368,11 @@ def process_bbox():
 
     # Create a unified run ID for this combination request
     run_id = _create_run(search_type)
-    
+
     # Spawn a separate thread for every active target
     for target in targets:
         threading.Thread(target=target, args=(run_id, data), daemon=True).start()
-        
+
     return jsonify({"status": "processing started", "run_id": run_id})
 
 
